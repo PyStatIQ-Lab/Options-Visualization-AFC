@@ -138,10 +138,6 @@ def plot_change_oi(df):
     fig = df_grouped.plot(kind='bar', stacked=True, figsize=(10, 6), color=["green", "orange"])
     st.pyplot(fig)
 
-# Delta/Gamma Exposure Curve (Placeholder for advanced strategies)
-def plot_delta_gamma(df):
-    st.write("Delta/Gamma exposure curve feature is under development.")
-
 # Plot Put-Call Ratio by Strike
 def plot_pcr(df):
     df_grouped = df.groupby(['strike', 'type'])['oi'].sum().unstack().fillna(0)
@@ -167,7 +163,6 @@ def plot_price_action(spot_price, df):
 
 # Analysis and Interpretation
 def generate_analysis(df):
-    # Placeholder for future analysis and trends
     analysis = """
     📊 **Analysis & Interpretation**:
     - The chart above shows the distribution of Open Interest (OI) and Volume for various strikes.
@@ -219,9 +214,6 @@ def main():
 
         st.subheader("🔹 Change in OI")
         plot_change_oi(df)
-
-        st.subheader("🔹 Delta / Gamma Exposure")
-        plot_delta_gamma(df)
 
         st.subheader("🔹 Put-Call Ratio by Strike")
         plot_pcr(df)
