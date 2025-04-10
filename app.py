@@ -1,8 +1,9 @@
 import streamlit as st
 import requests
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
+import plotly.express as px
+import yfinance as yf
 import numpy as np
 
 # API CONFIGURATION
@@ -14,16 +15,18 @@ HEADERS = {
 }
 NIFTY_LOT_SIZE = 75
 
+# Fetch Nifty Spot Price using YFinance
 @st.cache_data(ttl=60)
 def fetch_nifty_price():
-    url = f"{MARKET_DATA_URL}?i=NSE_INDEX|Nifty%2050"
-    response = requests.get(url, headers=HEADERS)
-    if response.status_code == 200:
-        return response.json()['data']['lastPrice']
-    else:
-        st.error(f"Failed to fetch Nifty price: {response.status_code}")
+    try:
+        nifty = yf.Ticker("^NSEI")
+        spot_price = nifty.history(period="1d")['Close'][0]
+        return spot_price
+    except Exception as e:
+        st.error(f"Error fetching Nifty spot price: {e}")
         return None
 
+# Fetch Options Data from Upstox API
 @st.cache_data(ttl=300)
 def fetch_options_data(asset_key="NSE_INDEX|Nifty 50", expiry="24-04-2025"):
     url = f"{BASE_URL}/strategy-chains?assetKey={asset_key}&strategyChainType=PC_CHAIN&expiry={expiry}"
@@ -34,6 +37,7 @@ def fetch_options_data(asset_key="NSE_INDEX|Nifty 50", expiry="24-04-2025"):
         st.error(f"Failed to fetch option chain data: {response.status_code}")
         return None
 
+# Process the Options Data
 def process_options_data(raw_data, spot_price):
     if not raw_data or 'data' not in raw_data:
         return None
@@ -62,6 +66,7 @@ def process_options_data(raw_data, spot_price):
                 })
     return pd.DataFrame(processed)
 
+# Build Sankey Diagram
 def build_sankey(df, metric='volume', top_n=10):
     df = df.sort_values(by=metric, ascending=False).head(top_n)
 
@@ -91,12 +96,14 @@ def build_sankey(df, metric='volume', top_n=10):
         link=dict(source=sources, target=targets, value=values)
     ))
 
+# Heatmap of OI/Volume
 def plot_heatmap(df, metric):
     heat_df = df.pivot_table(index='type', columns='strike', values=metric, fill_value=0)
     fig = px.imshow(heat_df, aspect="auto", color_continuous_scale='viridis',
                     labels={'x': 'Strike Price', 'y': 'Option Type', 'color': metric.upper()})
     st.plotly_chart(fig, use_container_width=True)
 
+# Stacked Bar Chart for OI/Volume
 def plot_stacked_bar(df, metric):
     grouped = df.pivot_table(index='strike', columns='type', values=metric, fill_value=0).reset_index()
     fig = go.Figure()
@@ -105,14 +112,17 @@ def plot_stacked_bar(df, metric):
     fig.update_layout(barmode='stack', title=f"Stacked Bar: {metric.upper()} Comparison")
     st.plotly_chart(fig, use_container_width=True)
 
+# IV Smile Curve
 def plot_iv_smile(df):
     fig = px.line(df, x='strike', y='iv', color='type', title="IV Smile Curve")
     st.plotly_chart(fig, use_container_width=True)
 
+# Change in OI (ΔOI) Chart
 def plot_change_oi(df):
     fig = px.bar(df, x='strike', y='change_oi', color='type', barmode='group', title="Change in Open Interest (ΔOI)")
     st.plotly_chart(fig, use_container_width=True)
 
+# Delta / Gamma Exposure Curve
 def plot_delta_gamma(df):
     grouped = df.groupby('strike').agg({'delta': 'sum', 'gamma': 'sum'}).reset_index()
     fig = go.Figure()
@@ -121,17 +131,20 @@ def plot_delta_gamma(df):
     fig.update_layout(title="Delta & Gamma Exposure Curve")
     st.plotly_chart(fig, use_container_width=True)
 
+# Put-Call Ratio (PCR) per Strike
 def plot_pcr(df):
     pivot = df.pivot_table(index='strike', columns='type', values='oi', fill_value=0)
     pivot['PCR'] = pivot['PE'] / pivot['CE'].replace(0, np.nan)
     fig = px.bar(pivot.reset_index(), x='strike', y='PCR', title="Put-Call Ratio (PCR)")
     st.plotly_chart(fig, use_container_width=True)
 
+# Moneyness Distribution
 def plot_moneyness_distribution(df):
     counts = df.groupby(['type', 'moneyness']).size().reset_index(name='count')
     fig = px.pie(counts, names='moneyness', values='count', color='type', title="Moneyness Distribution")
     st.plotly_chart(fig, use_container_width=True)
 
+# Live Price Action with ATM Highlighted
 def plot_price_action(spot_price, df):
     atm_strike = df.iloc[(df['strike'] - spot_price).abs().argmin()]['strike']
     fig = go.Figure()
@@ -149,6 +162,11 @@ def main():
     top_n = st.slider("Top N Active Options", 5, 20, 10)
 
     spot_price = fetch_nifty_price()
+
+    if spot_price is None:
+        st.error("Unable to retrieve the Nifty spot price. Please try again later.")
+        return
+
     st.markdown(f"**Spot Price:** {spot_price}")
 
     raw_data = fetch_options_data(expiry=expiry)
