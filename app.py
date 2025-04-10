@@ -330,7 +330,7 @@ def plot_moneyness_distribution(df):
     
     st.plotly_chart(fig, use_container_width=True)
 
-# Fixed Live Price Action with ATM Highlighted
+# Enhanced Live Price Action with ATM Highlighted
 def plot_price_action(spot_price, df):
     if df.empty:
         return
@@ -363,28 +363,24 @@ def plot_price_action(spot_price, df):
     ))
     
     # Add important strikes (highest OI for CE and PE)
-    ce_df = df[df['type'] == 'CE']
-    pe_df = df[df['type'] == 'PE']
+    max_ce_oi = df[df['type'] == 'CE'].loc[df['oi'].idxmax()]
+    max_pe_oi = df[df['type'] == 'PE'].loc[df['oi'].idxmax()]
     
-    if not ce_df.empty:
-        max_ce_oi = ce_df.loc[ce_df['oi'].idxmax()]
-        fig.add_trace(go.Scatter(
-            x=[min_strike, max_strike],
-            y=[max_ce_oi['strike'], max_ce_oi['strike']],
-            mode='lines',
-            name=f'Max CE OI Strike ({max_ce_oi["strike"]:.2f})',
-            line=dict(color='orange', width=1)
-        ))
+    fig.add_trace(go.Scatter(
+        x=[min_strike, max_strike],
+        y=[max_ce_oi['strike'], max_ce_oi['strike']],
+        mode='lines',
+        name=f'Max CE OI Strike ({max_ce_oi["strike"]:.2f})',
+        line=dict(color='orange', width=1)
+    ))
     
-    if not pe_df.empty:
-        max_pe_oi = pe_df.loc[pe_df['oi'].idxmax()]
-        fig.add_trace(go.Scatter(
-            x=[min_strike, max_strike],
-            y=[max_pe_oi['strike'], max_pe_oi['strike']],
-            mode='lines',
-            name=f'Max PE OI Strike ({max_pe_oi["strike"]:.2f})',
-            line=dict(color='purple', width=1)
-        ))
+    fig.add_trace(go.Scatter(
+        x=[min_strike, max_strike],
+        y=[max_pe_oi['strike'], max_pe_oi['strike']],
+        mode='lines',
+        name=f'Max PE OI Strike ({max_pe_oi["strike"]:.2f})',
+        line=dict(color='purple', width=1)
+    ))
     
     fig.update_layout(
         title="Live Price Action with Key Levels",
