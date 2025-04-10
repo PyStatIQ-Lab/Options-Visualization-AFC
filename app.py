@@ -115,35 +115,59 @@ def display_analysis(analysis):
         st.subheader(f"🔹 {key}")
         st.write(value)
 
-# Build Sankey Diagram
-def build_sankey(df, metric='volume', top_n=10):
-    df = df.sort_values(by=metric, ascending=False).head(top_n)
+# Plot Heatmap for OI/Volume
+def plot_heatmap(df, metric='oi'):
+    heatmap_data = df.pivot_table(index='type', columns='strike', values=metric, aggfunc='sum')
+    fig = px.imshow(heatmap_data, labels={'x': 'Strike', 'y': 'Option Type'}, title=f"{metric.upper()} Heatmap")
+    st.plotly_chart(fig, use_container_width=True)
 
-    labels = []
-    sources, targets, values = [], [], []
+# Plot Stacked Bar Chart for OI/Volume Comparison
+def plot_stacked_bar(df, metric='oi'):
+    grouped = df.groupby(['strike', 'type'])[metric].sum().unstack().fillna(0)
+    fig = grouped.plot(kind='bar', stacked=True, figsize=(10, 6))
+    fig.update_layout(title=f"Stacked Bar Chart for {metric.upper()} Comparison", xaxis_title="Strike Price", yaxis_title=metric.upper())
+    st.plotly_chart(fig, use_container_width=True)
 
-    for _, row in df.iterrows():
-        opt_type = row['type']
-        strike_label = f"{row['strike']:.0f}"
-        label = f"{strike_label}-{opt_type}"
+# Plot IV Smile Curve
+def plot_iv_smile(df):
+    iv_df = df.groupby(['strike', 'type'])['iv'].mean().reset_index()
+    fig = px.line(iv_df, x='strike', y='iv', color='type', title="IV Smile Curve")
+    st.plotly_chart(fig, use_container_width=True)
 
-        for val in [strike_label, opt_type, label]:
-            if val not in labels:
-                labels.append(val)
+# Plot Change in OI (ΔOI) as Bar Chart
+def plot_change_oi(df):
+    delta_df = df.groupby(['strike', 'type'])['change_oi'].sum().unstack().fillna(0)
+    fig = delta_df.plot(kind='bar', stacked=False, figsize=(10, 6))
+    fig.update_layout(title="Change in OI (ΔOI)", xaxis_title="Strike Price", yaxis_title="Change in OI")
+    st.plotly_chart(fig, use_container_width=True)
 
-        source = labels.index(strike_label)
-        mid = labels.index(label)
-        target = labels.index(opt_type)
+# Plot Delta and Gamma Exposure
+def plot_delta_gamma(df):
+    delta_gamma_df = df.groupby(['strike', 'type'])[['delta', 'gamma']].sum().unstack().fillna(0)
+    fig = delta_gamma_df.plot(kind='bar', stacked=False, figsize=(10, 6))
+    fig.update_layout(title="Delta and Gamma Exposure", xaxis_title="Strike Price", yaxis_title="Delta / Gamma")
+    st.plotly_chart(fig, use_container_width=True)
 
-        sources += [source, mid]
-        targets += [mid, target]
-        values += [row[metric], row[metric]]
+# Plot Put-Call Ratio by Strike
+def plot_pcr(df):
+    pcr_df = df.groupby('strike').apply(lambda x: (x[x['type'] == 'PE']['oi'].sum()) / (x[x['type'] == 'CE']['oi'].sum()))
+    fig = px.line(pcr_df, x=pcr_df.index, y=pcr_df.values, title="Put-Call Ratio by Strike", labels={'y': 'PCR'})
+    st.plotly_chart(fig, use_container_width=True)
 
-    return go.Figure(go.Sankey(
-        arrangement="snap",
-        node=dict(pad=15, thickness=20, label=labels, line=dict(color="black", width=0.5)),
-        link=dict(source=sources, target=targets, value=values)
-    ))
+# Plot Moneyness Distribution (Pie Chart)
+def plot_moneyness_distribution(df):
+    moneyness_dist = df['moneyness'].value_counts()
+    fig = px.pie(moneyness_dist, names=moneyness_dist.index, values=moneyness_dist.values, title="Moneyness Distribution")
+    st.plotly_chart(fig, use_container_width=True)
+
+# Plot Live Price Action with ATM
+def plot_price_action(spot_price, df):
+    atm_strike = df.loc[df['moneyness'] == 'ATM', 'strike'].values[0]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=[0, 1], y=[spot_price, spot_price], mode="lines", name="Spot Price", line=dict(color="red", width=4)))
+    fig.add_trace(go.Scatter(x=[0, 1], y=[atm_strike, atm_strike], mode="lines", name="ATM Strike", line=dict(color="blue", dash='dash')))
+    fig.update_layout(title="Spot Price vs ATM Strike", xaxis_title="Time", yaxis_title="Price")
+    st.plotly_chart(fig, use_container_width=True)
 
 # Streamlit UI
 def main():
