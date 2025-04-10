@@ -59,6 +59,8 @@ def process_options_data(raw_data, spot_price):
                     'iv': analytics.get('iv', 0),
                     'delta': analytics.get('delta', 0),
                     'gamma': analytics.get('gamma', 0),
+                    'theta': analytics.get('theta', 0),
+                    'vega': analytics.get('vega', 0),
                     'change_oi': market.get('changeOi', 0),
                     'moneyness': 'ATM' if abs(strike - spot_price) < 1 else 'ITM' if (
                         (option_type == 'callOptionData' and strike < spot_price) or
@@ -96,70 +98,329 @@ def build_sankey(df, metric='volume', top_n=10):
         link=dict(source=sources, target=targets, value=values)
     ))
 
-# Heatmap of OI/Volume
+# Enhanced Heatmap of OI/Volume
 def plot_heatmap(df, metric):
     heat_df = df.pivot_table(index='type', columns='strike', values=metric, fill_value=0)
-    fig = px.imshow(heat_df, aspect="auto", color_continuous_scale='viridis',
-                    labels={'x': 'Strike Price', 'y': 'Option Type', 'color': metric.upper()})
+    
+    # Sort columns by strike price
+    heat_df = heat_df.reindex(sorted(heat_df.columns), axis=1)
+    
+    fig = px.imshow(
+        heat_df,
+        aspect="auto",
+        color_continuous_scale='viridis',
+        labels={'x': 'Strike Price', 'y': 'Option Type', 'color': metric.upper()},
+        title=f"Heatmap of {metric.upper()} Across Strikes"
+    )
+    
+    # Add annotations
+    fig.update_traces(
+        texttemplate="%{z:.2s}",
+        textfont={"size": 10},
+        hovertemplate="<b>Strike</b>: %{x}<br><b>Type</b>: %{y}<br><b>" + metric.upper() + "</b>: %{z:,}"
+    )
+    
     st.plotly_chart(fig, use_container_width=True)
 
-# Stacked Bar Chart for OI/Volume
+# Enhanced Stacked Bar Chart for OI/Volume
 def plot_stacked_bar(df, metric):
     grouped = df.pivot_table(index='strike', columns='type', values=metric, fill_value=0).reset_index()
+    grouped = grouped.sort_values('strike')
+    
     fig = go.Figure()
-    fig.add_trace(go.Bar(x=grouped['strike'], y=grouped.get('CE', 0), name='CE'))
-    fig.add_trace(go.Bar(x=grouped['strike'], y=grouped.get('PE', 0), name='PE'))
-    fig.update_layout(barmode='stack', title=f"Stacked Bar: {metric.upper()} Comparison")
+    
+    # Add CE and PE bars
+    fig.add_trace(go.Bar(
+        x=grouped['strike'],
+        y=grouped.get('CE', 0),
+        name='CE',
+        hovertemplate="<b>Strike</b>: %{x}<br><b>CE " + metric.upper() + "</b>: %{y:,}<extra></extra>"
+    ))
+    
+    fig.add_trace(go.Bar(
+        x=grouped['strike'],
+        y=grouped.get('PE', 0),
+        name='PE',
+        hovertemplate="<b>Strike</b>: %{x}<br><b>PE " + metric.upper() + "</b>: %{y:,}<extra></extra>"
+    ))
+    
+    fig.update_layout(
+        barmode='stack',
+        title=f"Stacked Bar: {metric.upper()} Comparison by Strike",
+        xaxis_title="Strike Price",
+        yaxis_title=metric.upper(),
+        hovermode="x unified"
+    )
+    
     st.plotly_chart(fig, use_container_width=True)
 
-# IV Smile Curve
+# Enhanced IV Smile Curve
 def plot_iv_smile(df):
-    fig = px.line(df, x='strike', y='iv', color='type', title="IV Smile Curve")
+    # Sort by strike for smooth lines
+    df = df.sort_values('strike')
+    
+    fig = px.line(
+        df,
+        x='strike',
+        y='iv',
+        color='type',
+        title="IV Smile Curve",
+        labels={'iv': 'Implied Volatility', 'strike': 'Strike Price'},
+        line_shape='spline'
+    )
+    
+    # Add markers and improve hover info
+    fig.update_traces(
+        mode='lines+markers',
+        hovertemplate="<b>Strike</b>: %{x}<br><b>IV</b>: %{y:.2%}<extra></extra>"
+    )
+    
+    # Format y-axis as percentage
+    fig.update_layout(
+        yaxis_tickformat=".1%",
+        hovermode="x unified"
+    )
+    
     st.plotly_chart(fig, use_container_width=True)
 
-# Change in OI (ΔOI) Chart
+# Enhanced Change in OI (ΔOI) Chart
 def plot_change_oi(df):
-    fig = px.bar(df, x='strike', y='change_oi', color='type', barmode='group', title="Change in Open Interest (ΔOI)")
+    # Sort by strike for better visualization
+    df = df.sort_values('strike')
+    
+    fig = px.bar(
+        df,
+        x='strike',
+        y='change_oi',
+        color='type',
+        barmode='group',
+        title="Change in Open Interest (ΔOI)",
+        labels={'change_oi': 'Change in OI', 'strike': 'Strike Price'},
+        color_discrete_map={'CE': 'blue', 'PE': 'red'}
+    )
+    
+    # Add reference line at 0
+    fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="black")
+    
+    # Improve hover info
+    fig.update_traces(
+        hovertemplate="<b>Strike</b>: %{x}<br><b>ΔOI</b>: %{y:,}<extra></extra>"
+    )
+    
+    fig.update_layout(
+        hovermode="x unified",
+        yaxis_title="Change in OI"
+    )
+    
     st.plotly_chart(fig, use_container_width=True)
 
-# Delta / Gamma Exposure Curve
+# Enhanced Delta / Gamma Exposure Curve
 def plot_delta_gamma(df):
     grouped = df.groupby('strike').agg({'delta': 'sum', 'gamma': 'sum'}).reset_index()
+    grouped = grouped.sort_values('strike')
+    
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=grouped['strike'], y=grouped['delta'], name="Delta", mode='lines+markers'))
-    fig.add_trace(go.Scatter(x=grouped['strike'], y=grouped['gamma'], name="Gamma", mode='lines+markers'))
-    fig.update_layout(title="Delta & Gamma Exposure Curve")
+    
+    # Add Delta trace
+    fig.add_trace(go.Scatter(
+        x=grouped['strike'],
+        y=grouped['delta'],
+        name="Delta Exposure",
+        mode='lines+markers',
+        line=dict(color='royalblue', width=2),
+        hovertemplate="<b>Strike</b>: %{x}<br><b>Delta</b>: %{y:.2f}<extra></extra>"
+    ))
+    
+    # Add Gamma trace
+    fig.add_trace(go.Scatter(
+        x=grouped['strike'],
+        y=grouped['gamma'],
+        name="Gamma Exposure",
+        mode='lines+markers',
+        line=dict(color='firebrick', width=2),
+        hovertemplate="<b>Strike</b>: %{x}<br><b>Gamma</b>: %{y:.2f}<extra></extra>"
+    ))
+    
+    # Add reference line at 0
+    fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="black")
+    
+    fig.update_layout(
+        title="Delta & Gamma Exposure Curve",
+        xaxis_title="Strike Price",
+        yaxis_title="Exposure",
+        hovermode="x unified"
+    )
+    
     st.plotly_chart(fig, use_container_width=True)
 
-# Put-Call Ratio (PCR) per Strike
+# Enhanced Put-Call Ratio (PCR) per Strike
 def plot_pcr(df):
-    pivot = df.pivot_table(index='strike', columns='type', values='oi', fill_value=0)
+    pivot = df.pivot_table(index='strike', columns='type', values='oi', fill_value=0).reset_index()
+    pivot = pivot.sort_values('strike')
     pivot['PCR'] = pivot['PE'] / pivot['CE'].replace(0, np.nan)
-    fig = px.bar(pivot.reset_index(), x='strike', y='PCR', title="Put-Call Ratio (PCR)")
+    
+    fig = go.Figure()
+    
+    # Add PCR bars
+    fig.add_trace(go.Bar(
+        x=pivot['strike'],
+        y=pivot['PCR'],
+        name='PCR',
+        marker_color='purple',
+        hovertemplate="<b>Strike</b>: %{x}<br><b>PCR</b>: %{y:.2f}<extra></extra>"
+    ))
+    
+    # Add reference line at 1
+    fig.add_hline(y=1, line_width=1, line_dash="dash", line_color="black")
+    
+    # Add annotations for extreme PCR values
+    max_pcr = pivot['PCR'].max()
+    min_pcr = pivot['PCR'].min()
+    
+    if max_pcr > 2:
+        extreme_strike = pivot.loc[pivot['PCR'].idxmax(), 'strike']
+        fig.add_annotation(
+            x=extreme_strike,
+            y=max_pcr,
+            text="High PCR (Bearish)",
+            showarrow=True,
+            arrowhead=1
+        )
+    
+    if min_pcr < 0.5:
+        extreme_strike = pivot.loc[pivot['PCR'].idxmin(), 'strike']
+        fig.add_annotation(
+            x=extreme_strike,
+            y=min_pcr,
+            text="Low PCR (Bullish)",
+            showarrow=True,
+            arrowhead=1
+        )
+    
+    fig.update_layout(
+        title="Put-Call Ratio (PCR) by Strike",
+        xaxis_title="Strike Price",
+        yaxis_title="PCR (PE OI / CE OI)",
+        hovermode="x"
+    )
+    
     st.plotly_chart(fig, use_container_width=True)
 
-# Moneyness Distribution
+# Enhanced Moneyness Distribution
 def plot_moneyness_distribution(df):
     counts = df.groupby(['type', 'moneyness']).size().reset_index(name='count')
-    fig = px.pie(counts, names='moneyness', values='count', color='type', title="Moneyness Distribution")
+    
+    fig = px.sunburst(
+        counts,
+        path=['type', 'moneyness'],
+        values='count',
+        title="Moneyness Distribution",
+        color='moneyness',
+        color_discrete_map={
+            'ITM': 'green',
+            'OTM': 'red',
+            'ATM': 'blue'
+        }
+    )
+    
+    fig.update_traces(
+        textinfo="label+percent parent",
+        hovertemplate="<b>%{label}</b><br>Count: %{value:,}<extra></extra>"
+    )
+    
     st.plotly_chart(fig, use_container_width=True)
 
-# Live Price Action with ATM Highlighted
+# Enhanced Live Price Action with ATM Highlighted
 def plot_price_action(spot_price, df):
+    if df.empty:
+        return
+    
+    # Find ATM strike
     atm_strike = df.iloc[(df['strike'] - spot_price).abs().argmin()]['strike']
+    
+    # Get min and max strikes for the plot range
+    min_strike = df['strike'].min()
+    max_strike = df['strike'].max()
+    
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=[0, 1], y=[spot_price, spot_price], mode='lines', name='Spot Price'))
-    fig.add_trace(go.Scatter(x=[0, 1], y=[atm_strike, atm_strike], mode='lines', name='ATM Strike'))
-    fig.update_layout(title="Live Price Action with ATM")
+    
+    # Add spot price line
+    fig.add_trace(go.Scatter(
+        x=[min_strike, max_strike],
+        y=[spot_price, spot_price],
+        mode='lines',
+        name=f'Spot Price ({spot_price:.2f})',
+        line=dict(color='green', width=2, dash='dot')
+    ))
+    
+    # Add ATM strike line
+    fig.add_trace(go.Scatter(
+        x=[min_strike, max_strike],
+        y=[atm_strike, atm_strike],
+        mode='lines',
+        name=f'ATM Strike ({atm_strike:.2f})',
+        line=dict(color='blue', width=2, dash='dash')
+    ))
+    
+    # Add important strikes (highest OI for CE and PE)
+    max_ce_oi = df[df['type'] == 'CE'].loc[df['oi'].idxmax()]
+    max_pe_oi = df[df['type'] == 'PE'].loc[df['oi'].idxmax()]
+    
+    fig.add_trace(go.Scatter(
+        x=[min_strike, max_strike],
+        y=[max_ce_oi['strike'], max_ce_oi['strike']],
+        mode='lines',
+        name=f'Max CE OI Strike ({max_ce_oi["strike"]:.2f})',
+        line=dict(color='orange', width=1)
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=[min_strike, max_strike],
+        y=[max_pe_oi['strike'], max_pe_oi['strike']],
+        mode='lines',
+        name=f'Max PE OI Strike ({max_pe_oi["strike"]:.2f})',
+        line=dict(color='purple', width=1)
+    ))
+    
+    fig.update_layout(
+        title="Live Price Action with Key Levels",
+        xaxis_title="Strike Price Range",
+        yaxis_title="Price",
+        showlegend=True,
+        hovermode="x unified"
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+
+# Add Greek Exposure Heatmap
+def plot_greek_heatmap(df, greek='delta'):
+    heat_df = df.pivot_table(index='type', columns='strike', values=greek, fill_value=0)
+    heat_df = heat_df.reindex(sorted(heat_df.columns), axis=1)
+    
+    fig = px.imshow(
+        heat_df,
+        aspect="auto",
+        color_continuous_scale='RdBu',
+        labels={'x': 'Strike Price', 'y': 'Option Type', 'color': greek.capitalize()},
+        title=f"{greek.capitalize()} Exposure Across Strikes"
+    )
+    
+    fig.update_traces(
+        hovertemplate="<b>Strike</b>: %{x}<br><b>Type</b>: %{y}<br><b>" + greek.capitalize() + "</b>: %{z:.2f}<extra></extra>"
+    )
+    
     st.plotly_chart(fig, use_container_width=True)
 
 def main():
     st.set_page_config(page_title="Nifty Option Flow", layout="wide")
     st.title("📊 Real-Time Alluvial Flow of Most Active Nifty Options")
 
-    expiry = st.text_input("Expiry Date (DD-MM-YYYY):", "24-04-2025")
-    metric = st.selectbox("Select Metric", ["volume", "oi", "ltp"])
-    top_n = st.slider("Top N Active Options", 5, 20, 10)
+    with st.sidebar:
+        st.header("Filters")
+        expiry = st.text_input("Expiry Date (DD-MM-YYYY):", "24-04-2025")
+        metric = st.selectbox("Select Metric", ["volume", "oi", "ltp", "change_oi"])
+        top_n = st.slider("Top N Active Options", 5, 20, 10)
+        greek = st.selectbox("Select Greek for Heatmap", ["delta", "gamma", "theta", "vega"])
 
     spot_price = fetch_nifty_price()
 
@@ -167,41 +428,50 @@ def main():
         st.error("Unable to retrieve the Nifty spot price. Please try again later.")
         return
 
-    st.markdown(f"**Spot Price:** {spot_price}")
+    st.markdown(f"**Current Nifty Spot Price:** ₹{spot_price:,.2f}")
 
     raw_data = fetch_options_data(expiry=expiry)
     df = process_options_data(raw_data, spot_price)
 
     if df is not None and not df.empty:
-        st.subheader("🔹 Option Chain Data")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Total CE Volume", f"{df[df['type'] == 'CE']['volume'].sum():,}")
+        with col2:
+            st.metric("Total PE Volume", f"{df[df['type'] == 'PE']['volume'].sum():,}")
+
+        st.subheader("🔹 Option Chain Data (Top Active)")
         st.dataframe(df.sort_values(by=metric, ascending=False).head(top_n))
 
         st.subheader("🔹 Sankey: Top Active Options Flow")
         fig = build_sankey(df, metric=metric, top_n=top_n)
         st.plotly_chart(fig, use_container_width=True)
 
-        st.subheader("🔹 Heatmap of Volume / OI")
+        st.subheader("🔹 Heatmap of OI/Volume Across Strikes")
         plot_heatmap(df, metric)
 
-        st.subheader("🔹 Stacked Bar: CE vs PE Volume / OI")
+        st.subheader("🔹 Stacked Bar: CE vs PE OI/Volume Comparison")
         plot_stacked_bar(df, metric)
 
         st.subheader("🔹 IV Smile Curve")
         plot_iv_smile(df)
 
-        st.subheader("🔹 Change in OI")
+        st.subheader("🔹 Change in Open Interest (ΔOI)")
         plot_change_oi(df)
 
-        st.subheader("🔹 Delta / Gamma Exposure")
+        st.subheader(f"🔹 {greek.capitalize()} Exposure Heatmap")
+        plot_greek_heatmap(df, greek)
+
+        st.subheader("🔹 Delta & Gamma Exposure Curve")
         plot_delta_gamma(df)
 
-        st.subheader("🔹 Put-Call Ratio by Strike")
+        st.subheader("🔹 Put-Call Ratio (PCR) by Strike")
         plot_pcr(df)
 
         st.subheader("🔹 Moneyness Distribution")
         plot_moneyness_distribution(df)
 
-        st.subheader("🔹 Live Price Action with ATM")
+        st.subheader("🔹 Live Price Action with Key Levels")
         plot_price_action(spot_price, df)
 
     else:
