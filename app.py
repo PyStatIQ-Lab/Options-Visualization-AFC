@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 import yfinance as yf
+import numpy as np
 
 # API CONFIGURATION
 BASE_URL = "https://service.upstox.com/option-analytics-tool/open/v1"
@@ -14,13 +15,18 @@ HEADERS = {
 }
 NIFTY_LOT_SIZE = 75
 
-# FETCH NIFTY SPOT PRICE USING YFINANCE
+# Fetch Nifty Spot Price using YFinance
 @st.cache_data(ttl=60)
 def fetch_nifty_price():
-    nifty = yf.Ticker("^NSEI")
-    return nifty.history(period="1d")["Close"].iloc[-1]
+    try:
+        nifty = yf.Ticker("^NSEI")
+        spot_price = nifty.history(period="1d")['Close'][0]
+        return spot_price
+    except Exception as e:
+        st.error(f"Error fetching Nifty spot price: {e}")
+        return None
 
-# FETCH OPTIONS DATA
+# Fetch Options Data from Upstox API
 @st.cache_data(ttl=300)
 def fetch_options_data(asset_key="NSE_INDEX|Nifty 50", expiry="24-04-2025"):
     url = f"{BASE_URL}/strategy-chains?assetKey={asset_key}&strategyChainType=PC_CHAIN&expiry={expiry}"
@@ -31,7 +37,7 @@ def fetch_options_data(asset_key="NSE_INDEX|Nifty 50", expiry="24-04-2025"):
         st.error(f"Failed to fetch option chain data: {response.status_code}")
         return None
 
-# PROCESS API RESPONSE
+# Process the Options Data
 def process_options_data(raw_data, spot_price):
     if not raw_data or 'data' not in raw_data:
         return None
@@ -51,135 +57,106 @@ def process_options_data(raw_data, spot_price):
                     'volume': market.get('volume', 0),
                     'ltp': market.get('ltp', 0),
                     'iv': analytics.get('iv', 0),
-                    'moneyness': 'ATM' if abs(strike - spot_price) < 1 else 'ITM' if strike < spot_price else 'OTM'
+                    'delta': analytics.get('delta', 0),
+                    'gamma': analytics.get('gamma', 0),
+                    'change_oi': market.get('changeOi', 0),
+                    'moneyness': 'ATM' if abs(strike - spot_price) < 1 else 'ITM' if (
+                        (option_type == 'callOptionData' and strike < spot_price) or
+                        (option_type == 'putOptionData' and strike > spot_price)) else 'OTM'
                 })
     return pd.DataFrame(processed)
 
-# BUILD SANKEY NODES AND LINKS FOR ALLUVIAL FLOW
+# Build Sankey Diagram
 def build_sankey(df, metric='volume', top_n=10):
     df = df.sort_values(by=metric, ascending=False).head(top_n)
-    
+
     labels = []
-    sources = []
-    targets = []
-    values = []
-    
-    for i, row in df.iterrows():
+    sources, targets, values = [], [], []
+
+    for _, row in df.iterrows():
         opt_type = row['type']
         strike_label = f"{row['strike']:.0f}"
         label = f"{strike_label}-{opt_type}"
-        
-        if strike_label not in labels:
-            labels.append(strike_label)
-        if opt_type not in labels:
-            labels.append(opt_type)
-        if label not in labels:
-            labels.append(label)
-        
+
+        for val in [strike_label, opt_type, label]:
+            if val not in labels:
+                labels.append(val)
+
         source = labels.index(strike_label)
-        target = labels.index(label)
-        values.append(row[metric])
-        sources.append(source)
-        targets.append(target)
-        
-        # Connect to CE/PE from label
-        sources.append(target)
-        targets.append(labels.index(opt_type))
-        values.append(row[metric])
+        mid = labels.index(label)
+        target = labels.index(opt_type)
+
+        sources += [source, mid]
+        targets += [mid, target]
+        values += [row[metric], row[metric]]
 
     return go.Figure(go.Sankey(
         arrangement="snap",
-        node=dict(
-            pad=15,
-            thickness=20,
-            line=dict(color="black", width=0.5),
-            label=labels
-        ),
-        link=dict(
-            source=sources,
-            target=targets,
-            value=values
-        )
+        node=dict(pad=15, thickness=20, label=labels, line=dict(color="black", width=0.5)),
+        link=dict(source=sources, target=targets, value=values)
     ))
 
-# Plot Heatmap of OI or Volume across Strikes
-def plot_heatmap(df, metric='volume'):
-    # Pivot the DataFrame for plotting
-    df_pivot = df.pivot_table(values=metric, index='type', columns='strike', aggfunc='sum', fill_value=0)
-    
-    # Create the heatmap using Plotly
-    fig = px.imshow(df_pivot,
-                    labels=dict(x="Strike Price", y="Option Type", color=metric.capitalize()),
-                    color_continuous_scale="Viridis",
-                    title=f"Heatmap of {metric.capitalize()} across Strikes")
-    fig.update_xaxes(title="Strike Price", tickmode="linear")
-    fig.update_yaxes(title="Option Type", tickvals=[0, 1], ticktext=["CE", "PE"])
+# Heatmap of OI/Volume
+def plot_heatmap(df, metric):
+    heat_df = df.pivot_table(index='type', columns='strike', values=metric, fill_value=0)
+    fig = px.imshow(heat_df, aspect="auto", color_continuous_scale='viridis',
+                    labels={'x': 'Strike Price', 'y': 'Option Type', 'color': metric.upper()})
     st.plotly_chart(fig, use_container_width=True)
 
-# Generate stacked bar chart of OI/Volume comparison between CE and PE
-def plot_stacked_bar(df, metric='volume'):
-    df_grouped = df.groupby(['strike', 'type'])[metric].sum().unstack().fillna(0)
-    fig = df_grouped.plot(kind='bar', stacked=True, figsize=(10, 6), color=["blue", "red"])
-    st.pyplot(fig)
+# Stacked Bar Chart for OI/Volume
+def plot_stacked_bar(df, metric):
+    grouped = df.pivot_table(index='strike', columns='type', values=metric, fill_value=0).reset_index()
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=grouped['strike'], y=grouped.get('CE', 0), name='CE'))
+    fig.add_trace(go.Bar(x=grouped['strike'], y=grouped.get('PE', 0), name='PE'))
+    fig.update_layout(barmode='stack', title=f"Stacked Bar: {metric.upper()} Comparison")
+    st.plotly_chart(fig, use_container_width=True)
 
 # IV Smile Curve
 def plot_iv_smile(df):
-    iv_data = df[['strike', 'type', 'iv']].pivot(index='strike', columns='type', values='iv')
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=iv_data.index, y=iv_data['CE'], mode='lines', name='CE IV'))
-    fig.add_trace(go.Scatter(x=iv_data.index, y=iv_data['PE'], mode='lines', name='PE IV'))
-    fig.update_layout(title="Implied Volatility Smile", xaxis_title="Strike Price", yaxis_title="Implied Volatility")
+    fig = px.line(df, x='strike', y='iv', color='type', title="IV Smile Curve")
     st.plotly_chart(fig, use_container_width=True)
 
-# Change in OI (Δ OI) Bar or Waterfall Chart
+# Change in OI (ΔOI) Chart
 def plot_change_oi(df):
-    df['oi_change'] = df.groupby('type')['oi'].diff().fillna(0)
-    df_grouped = df.groupby(['strike', 'type'])['oi_change'].sum().unstack().fillna(0)
-    fig = df_grouped.plot(kind='bar', stacked=True, figsize=(10, 6), color=["green", "orange"])
-    st.pyplot(fig)
-
-# Plot Put-Call Ratio by Strike
-def plot_pcr(df):
-    df_grouped = df.groupby(['strike', 'type'])['oi'].sum().unstack().fillna(0)
-    pcr = df_grouped['PE'] / df_grouped['CE']
-    fig = go.Figure(go.Scatter(x=pcr.index, y=pcr, mode='lines', name="PCR"))
-    fig.update_layout(title="Put-Call Ratio by Strike", xaxis_title="Strike Price", yaxis_title="PCR")
+    fig = px.bar(df, x='strike', y='change_oi', color='type', barmode='group', title="Change in Open Interest (ΔOI)")
     st.plotly_chart(fig, use_container_width=True)
 
-# Moneyness Distribution (Pie or Histogram)
-def plot_moneyness_distribution(df):
-    moneyness_dist = df['moneyness'].value_counts()
-    fig = go.Figure(go.Pie(labels=moneyness_dist.index, values=moneyness_dist.values, hole=0.3))
-    fig.update_layout(title="Moneyness Distribution (ITM/OTM/ATM)")
-    st.plotly_chart(fig, use_container_width=True)
-
-# Live Price Action Chart with ATM Highlighted
-def plot_price_action(spot_price, df):
+# Delta / Gamma Exposure Curve
+def plot_delta_gamma(df):
+    grouped = df.groupby('strike').agg({'delta': 'sum', 'gamma': 'sum'}).reset_index()
     fig = go.Figure()
-    strikes = df['strike'].unique()
-    fig.add_trace(go.Scatter(x=[spot_price] * 2, y=[min(strikes), max(strikes)], mode='lines', name="Spot Price", line=dict(color="blue", dash="dash")))
-    fig.update_layout(title="Live Price Action with ATM Highlighted", xaxis_title="Strike Price", yaxis_title="Price")
+    fig.add_trace(go.Scatter(x=grouped['strike'], y=grouped['delta'], name="Delta", mode='lines+markers'))
+    fig.add_trace(go.Scatter(x=grouped['strike'], y=grouped['gamma'], name="Gamma", mode='lines+markers'))
+    fig.update_layout(title="Delta & Gamma Exposure Curve")
     st.plotly_chart(fig, use_container_width=True)
 
-# Analysis and Interpretation
-def generate_analysis(df):
-    analysis = """
-    📊 **Analysis & Interpretation**:
-    - The chart above shows the distribution of Open Interest (OI) and Volume for various strikes.
-    - High OI and Volume at a particular strike may indicate heavy market activity or institutional interest.
-    - The IV Smile curve indicates implied volatility for both Call and Put options. Higher IV at extreme strikes may suggest market expectation of higher volatility.
-    """
-    return analysis
+# Put-Call Ratio (PCR) per Strike
+def plot_pcr(df):
+    pivot = df.pivot_table(index='strike', columns='type', values='oi', fill_value=0)
+    pivot['PCR'] = pivot['PE'] / pivot['CE'].replace(0, np.nan)
+    fig = px.bar(pivot.reset_index(), x='strike', y='PCR', title="Put-Call Ratio (PCR)")
+    st.plotly_chart(fig, use_container_width=True)
 
-# Display Analysis in the app
-def display_analysis(analysis):
-    st.write(analysis)
+# Moneyness Distribution
+def plot_moneyness_distribution(df):
+    counts = df.groupby(['type', 'moneyness']).size().reset_index(name='count')
+    fig = px.pie(counts, names='moneyness', values='count', color='type', title="Moneyness Distribution")
+    st.plotly_chart(fig, use_container_width=True)
 
-# Main Function
+# Live Price Action with ATM Highlighted
+def plot_price_action(spot_price, df):
+    atm_strike = df.iloc[(df['strike'] - spot_price).abs().argmin()]['strike']
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=[0, 1], y=[spot_price, spot_price], mode='lines', name='Spot Price'))
+    fig.add_trace(go.Scatter(x=[0, 1], y=[atm_strike, atm_strike], mode='lines', name='ATM Strike'))
+    fig.update_layout(title="Live Price Action with ATM")
+    st.plotly_chart(fig, use_container_width=True)
+
 def main():
     st.set_page_config(page_title="Nifty Option Flow", layout="wide")
     st.title("📊 Real-Time Alluvial Flow of Most Active Nifty Options")
-    
+
     expiry = st.text_input("Expiry Date (DD-MM-YYYY):", "24-04-2025")
     metric = st.selectbox("Select Metric", ["volume", "oi", "ltp"])
     top_n = st.slider("Top N Active Options", 5, 20, 10)
@@ -215,6 +192,9 @@ def main():
         st.subheader("🔹 Change in OI")
         plot_change_oi(df)
 
+        st.subheader("🔹 Delta / Gamma Exposure")
+        plot_delta_gamma(df)
+
         st.subheader("🔹 Put-Call Ratio by Strike")
         plot_pcr(df)
 
@@ -223,10 +203,6 @@ def main():
 
         st.subheader("🔹 Live Price Action with ATM")
         plot_price_action(spot_price, df)
-
-        # Display Analysis & Interpretation
-        analysis = generate_analysis(df)
-        display_analysis(analysis)
 
     else:
         st.error("No option data available.")
