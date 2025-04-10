@@ -66,6 +66,55 @@ def process_options_data(raw_data, spot_price):
                 })
     return pd.DataFrame(processed)
 
+# Analysis based on OI, Volume, IV, PCR, etc.
+def generate_analysis(df):
+    analysis = {}
+
+    # OI Analysis
+    max_oi = df['oi'].max()
+    max_oi_strike = df.loc[df['oi'] == max_oi, 'strike'].values[0]
+    analysis['OI Analysis'] = f"Maximum OI is at strike {max_oi_strike}, which indicates strong support or resistance at this level."
+
+    # Volume Analysis
+    max_volume = df['volume'].max()
+    max_volume_strike = df.loc[df['volume'] == max_volume, 'strike'].values[0]
+    analysis['Volume Analysis'] = f"Maximum Volume is at strike {max_volume_strike}, indicating strong market participation."
+
+    # IV Analysis
+    max_iv = df['iv'].max()
+    max_iv_strike = df.loc[df['iv'] == max_iv, 'strike'].values[0]
+    analysis['IV Analysis'] = f"Maximum IV is at strike {max_iv_strike}, which suggests higher market expectations of volatility at this strike."
+
+    # Put-Call Ratio (PCR)
+    pcr = df.groupby('strike').apply(lambda x: (x[x['type'] == 'PE']['oi'].sum()) / (x[x['type'] == 'CE']['oi'].sum()))
+    pcr_max = pcr.max()
+    pcr_max_strike = pcr.idxmax()
+    if pcr_max > 1:
+        analysis['PCR Analysis'] = f"Put-Call Ratio (PCR) is highest at strike {pcr_max_strike} with a value of {pcr_max}. A PCR > 1 suggests a bearish sentiment."
+    else:
+        analysis['PCR Analysis'] = f"Put-Call Ratio (PCR) is lowest at strike {pcr_max_strike} with a value of {pcr_max}. A PCR < 1 suggests a bullish sentiment."
+
+    # Delta-Gamma Exposure
+    delta_gamma_analysis = df[['strike', 'delta', 'gamma']].groupby('strike').agg({'delta': 'sum', 'gamma': 'sum'}).reset_index()
+    analysis['Delta-Gamma Exposure'] = "Delta and Gamma values show potential hedging pressures. High Delta indicates a more directional move."
+
+    # Change in OI (ΔOI)
+    change_oi_analysis = df.groupby('strike')['change_oi'].sum().sort_values(ascending=False).head(1)
+    change_oi_strike = change_oi_analysis.index[0]
+    change_oi_value = change_oi_analysis.values[0]
+    if change_oi_value > 0:
+        analysis['ΔOI Analysis'] = f"Change in OI is highest at strike {change_oi_strike} with a value of {change_oi_value}. Positive ΔOI in CE indicates a bullish sentiment."
+    else:
+        analysis['ΔOI Analysis'] = f"Change in OI is highest at strike {change_oi_strike} with a value of {change_oi_value}. Positive ΔOI in PE indicates a bearish sentiment."
+
+    return analysis
+
+# Display Analysis
+def display_analysis(analysis):
+    for key, value in analysis.items():
+        st.subheader(f"🔹 {key}")
+        st.write(value)
+
 # Build Sankey Diagram
 def build_sankey(df, metric='volume', top_n=10):
     df = df.sort_values(by=metric, ascending=False).head(top_n)
@@ -96,63 +145,7 @@ def build_sankey(df, metric='volume', top_n=10):
         link=dict(source=sources, target=targets, value=values)
     ))
 
-# Heatmap of OI/Volume
-def plot_heatmap(df, metric):
-    heat_df = df.pivot_table(index='type', columns='strike', values=metric, fill_value=0)
-    fig = px.imshow(heat_df, aspect="auto", color_continuous_scale='viridis',
-                    labels={'x': 'Strike Price', 'y': 'Option Type', 'color': metric.upper()})
-    st.plotly_chart(fig, use_container_width=True)
-
-# Stacked Bar Chart for OI/Volume
-def plot_stacked_bar(df, metric):
-    grouped = df.pivot_table(index='strike', columns='type', values=metric, fill_value=0).reset_index()
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=grouped['strike'], y=grouped.get('CE', 0), name='CE'))
-    fig.add_trace(go.Bar(x=grouped['strike'], y=grouped.get('PE', 0), name='PE'))
-    fig.update_layout(barmode='stack', title=f"Stacked Bar: {metric.upper()} Comparison")
-    st.plotly_chart(fig, use_container_width=True)
-
-# IV Smile Curve
-def plot_iv_smile(df):
-    fig = px.line(df, x='strike', y='iv', color='type', title="IV Smile Curve")
-    st.plotly_chart(fig, use_container_width=True)
-
-# Change in OI (ΔOI) Chart
-def plot_change_oi(df):
-    fig = px.bar(df, x='strike', y='change_oi', color='type', barmode='group', title="Change in Open Interest (ΔOI)")
-    st.plotly_chart(fig, use_container_width=True)
-
-# Delta / Gamma Exposure Curve
-def plot_delta_gamma(df):
-    grouped = df.groupby('strike').agg({'delta': 'sum', 'gamma': 'sum'}).reset_index()
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=grouped['strike'], y=grouped['delta'], name="Delta", mode='lines+markers'))
-    fig.add_trace(go.Scatter(x=grouped['strike'], y=grouped['gamma'], name="Gamma", mode='lines+markers'))
-    fig.update_layout(title="Delta & Gamma Exposure Curve")
-    st.plotly_chart(fig, use_container_width=True)
-
-# Put-Call Ratio (PCR) per Strike
-def plot_pcr(df):
-    pivot = df.pivot_table(index='strike', columns='type', values='oi', fill_value=0)
-    pivot['PCR'] = pivot['PE'] / pivot['CE'].replace(0, np.nan)
-    fig = px.bar(pivot.reset_index(), x='strike', y='PCR', title="Put-Call Ratio (PCR)")
-    st.plotly_chart(fig, use_container_width=True)
-
-# Moneyness Distribution
-def plot_moneyness_distribution(df):
-    counts = df.groupby(['type', 'moneyness']).size().reset_index(name='count')
-    fig = px.pie(counts, names='moneyness', values='count', color='type', title="Moneyness Distribution")
-    st.plotly_chart(fig, use_container_width=True)
-
-# Live Price Action with ATM Highlighted
-def plot_price_action(spot_price, df):
-    atm_strike = df.iloc[(df['strike'] - spot_price).abs().argmin()]['strike']
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=[0, 1], y=[spot_price, spot_price], mode='lines', name='Spot Price'))
-    fig.add_trace(go.Scatter(x=[0, 1], y=[atm_strike, atm_strike], mode='lines', name='ATM Strike'))
-    fig.update_layout(title="Live Price Action with ATM")
-    st.plotly_chart(fig, use_container_width=True)
-
+# Streamlit UI
 def main():
     st.set_page_config(page_title="Nifty Option Flow", layout="wide")
     st.title("📊 Real-Time Alluvial Flow of Most Active Nifty Options")
@@ -203,6 +196,10 @@ def main():
 
         st.subheader("🔹 Live Price Action with ATM")
         plot_price_action(spot_price, df)
+
+        # Display Analysis & Interpretation
+        analysis = generate_analysis(df)
+        display_analysis(analysis)
 
     else:
         st.error("No option data available.")
