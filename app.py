@@ -4,7 +4,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 import yfinance as yf
-import numpy as np
 
 # API CONFIGURATION
 BASE_URL = "https://service.upstox.com/option-analytics-tool/open/v1"
@@ -15,18 +14,13 @@ HEADERS = {
 }
 NIFTY_LOT_SIZE = 75
 
-# Fetch Nifty Spot Price using YFinance
+# FETCH NIFTY SPOT PRICE USING YFINANCE
 @st.cache_data(ttl=60)
 def fetch_nifty_price():
-    try:
-        nifty = yf.Ticker("^NSEI")
-        spot_price = nifty.history(period="1d")['Close'][0]
-        return spot_price
-    except Exception as e:
-        st.error(f"Error fetching Nifty spot price: {e}")
-        return None
+    nifty = yf.Ticker("^NSEI")
+    return nifty.history(period="1d")["Close"].iloc[-1]
 
-# Fetch Options Data from Upstox API
+# FETCH OPTIONS DATA
 @st.cache_data(ttl=300)
 def fetch_options_data(asset_key="NSE_INDEX|Nifty 50", expiry="24-04-2025"):
     url = f"{BASE_URL}/strategy-chains?assetKey={asset_key}&strategyChainType=PC_CHAIN&expiry={expiry}"
@@ -37,7 +31,7 @@ def fetch_options_data(asset_key="NSE_INDEX|Nifty 50", expiry="24-04-2025"):
         st.error(f"Failed to fetch option chain data: {response.status_code}")
         return None
 
-# Process the Options Data
+# PROCESS API RESPONSE
 def process_options_data(raw_data, spot_price):
     if not raw_data or 'data' not in raw_data:
         return None
@@ -57,36 +51,28 @@ def process_options_data(raw_data, spot_price):
                     'volume': market.get('volume', 0),
                     'ltp': market.get('ltp', 0),
                     'iv': analytics.get('iv', 0),
-                    'delta': analytics.get('delta', 0),
-                    'gamma': analytics.get('gamma', 0),
-                    'change_oi': market.get('changeOi', 0),
-                    'moneyness': 'ATM' if abs(strike - spot_price) < 1 else 'ITM' if (
-                        (option_type == 'callOptionData' and strike < spot_price) or
-                        (option_type == 'putOptionData' and strike > spot_price)) else 'OTM'
+                    'moneyness': 'ATM' if abs(strike - spot_price) < 1 else 'ITM' if strike < spot_price else 'OTM'
                 })
     return pd.DataFrame(processed)
 
-# Build Sankey Diagram for Option Flow
+# BUILD SANKEY NODES AND LINKS FOR ALLUVIAL FLOW
 def build_sankey(df, metric='volume', top_n=10):
-    # Sorting and selecting top N
     df = df.sort_values(by=metric, ascending=False).head(top_n)
     
-    # Create lists to hold Sankey diagram data
     labels = []
     sources = []
     targets = []
     values = []
     
-    # Add labels and flow data to the Sankey diagram
     for i, row in df.iterrows():
+        opt_type = row['type']
         strike_label = f"{row['strike']:.0f}"
-        option_type = row['type']
-        label = f"{strike_label}-{option_type}"
+        label = f"{strike_label}-{opt_type}"
         
         if strike_label not in labels:
             labels.append(strike_label)
-        if option_type not in labels:
-            labels.append(option_type)
+        if opt_type not in labels:
+            labels.append(opt_type)
         if label not in labels:
             labels.append(label)
         
@@ -96,13 +82,12 @@ def build_sankey(df, metric='volume', top_n=10):
         sources.append(source)
         targets.append(target)
         
-        # Add connection to option type (CE/PE)
+        # Connect to CE/PE from label
         sources.append(target)
-        targets.append(labels.index(option_type))
+        targets.append(labels.index(opt_type))
         values.append(row[metric])
 
-    # Create and return Sankey diagram
-    fig = go.Figure(go.Sankey(
+    return go.Figure(go.Sankey(
         arrangement="snap",
         node=dict(
             pad=15,
@@ -116,62 +101,90 @@ def build_sankey(df, metric='volume', top_n=10):
             value=values
         )
     ))
-    return fig
+
+# Plot Heatmap of OI or Volume across Strikes
+def plot_heatmap(df, metric='volume'):
+    # Pivot the DataFrame for plotting
+    df_pivot = df.pivot_table(values=metric, index='type', columns='strike', aggfunc='sum', fill_value=0)
+    
+    # Create the heatmap using Plotly
+    fig = px.imshow(df_pivot,
+                    labels=dict(x="Strike Price", y="Option Type", color=metric.capitalize()),
+                    color_continuous_scale="Viridis",
+                    title=f"Heatmap of {metric.capitalize()} across Strikes")
+    fig.update_xaxes(title="Strike Price", tickmode="linear")
+    fig.update_yaxes(title="Option Type", tickvals=[0, 1], ticktext=["CE", "PE"])
+    st.plotly_chart(fig, use_container_width=True)
+
+# Generate stacked bar chart of OI/Volume comparison between CE and PE
+def plot_stacked_bar(df, metric='volume'):
+    df_grouped = df.groupby(['strike', 'type'])[metric].sum().unstack().fillna(0)
+    fig = df_grouped.plot(kind='bar', stacked=True, figsize=(10, 6), color=["blue", "red"])
+    st.pyplot(fig)
+
+# IV Smile Curve
+def plot_iv_smile(df):
+    iv_data = df[['strike', 'type', 'iv']].pivot(index='strike', columns='type', values='iv')
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=iv_data.index, y=iv_data['CE'], mode='lines', name='CE IV'))
+    fig.add_trace(go.Scatter(x=iv_data.index, y=iv_data['PE'], mode='lines', name='PE IV'))
+    fig.update_layout(title="Implied Volatility Smile", xaxis_title="Strike Price", yaxis_title="Implied Volatility")
+    st.plotly_chart(fig, use_container_width=True)
+
+# Change in OI (Δ OI) Bar or Waterfall Chart
+def plot_change_oi(df):
+    df['oi_change'] = df.groupby('type')['oi'].diff().fillna(0)
+    df_grouped = df.groupby(['strike', 'type'])['oi_change'].sum().unstack().fillna(0)
+    fig = df_grouped.plot(kind='bar', stacked=True, figsize=(10, 6), color=["green", "orange"])
+    st.pyplot(fig)
+
+# Delta/Gamma Exposure Curve (Placeholder for advanced strategies)
+def plot_delta_gamma(df):
+    st.write("Delta/Gamma exposure curve feature is under development.")
+
+# Plot Put-Call Ratio by Strike
+def plot_pcr(df):
+    df_grouped = df.groupby(['strike', 'type'])['oi'].sum().unstack().fillna(0)
+    pcr = df_grouped['PE'] / df_grouped['CE']
+    fig = go.Figure(go.Scatter(x=pcr.index, y=pcr, mode='lines', name="PCR"))
+    fig.update_layout(title="Put-Call Ratio by Strike", xaxis_title="Strike Price", yaxis_title="PCR")
+    st.plotly_chart(fig, use_container_width=True)
+
+# Moneyness Distribution (Pie or Histogram)
+def plot_moneyness_distribution(df):
+    moneyness_dist = df['moneyness'].value_counts()
+    fig = go.Figure(go.Pie(labels=moneyness_dist.index, values=moneyness_dist.values, hole=0.3))
+    fig.update_layout(title="Moneyness Distribution (ITM/OTM/ATM)")
+    st.plotly_chart(fig, use_container_width=True)
+
+# Live Price Action Chart with ATM Highlighted
+def plot_price_action(spot_price, df):
+    fig = go.Figure()
+    strikes = df['strike'].unique()
+    fig.add_trace(go.Scatter(x=[spot_price] * 2, y=[min(strikes), max(strikes)], mode='lines', name="Spot Price", line=dict(color="blue", dash="dash")))
+    fig.update_layout(title="Live Price Action with ATM Highlighted", xaxis_title="Strike Price", yaxis_title="Price")
+    st.plotly_chart(fig, use_container_width=True)
 
 # Analysis and Interpretation
 def generate_analysis(df):
-    analysis = {}
-
-    # OI Analysis
-    max_oi = df['oi'].max()
-    max_oi_strike = df.loc[df['oi'] == max_oi, 'strike'].values[0]
-    analysis['OI Analysis'] = f"Maximum OI is at strike {max_oi_strike}, which indicates strong support or resistance at this level."
-
-    # Volume Analysis
-    max_volume = df['volume'].max()
-    max_volume_strike = df.loc[df['volume'] == max_volume, 'strike'].values[0]
-    analysis['Volume Analysis'] = f"Maximum Volume is at strike {max_volume_strike}, indicating strong market participation."
-
-    # IV Analysis
-    max_iv = df['iv'].max()
-    max_iv_strike = df.loc[df['iv'] == max_iv, 'strike'].values[0]
-    analysis['IV Analysis'] = f"Maximum IV is at strike {max_iv_strike}, which suggests higher market expectations of volatility at this strike."
-
-    # Put-Call Ratio (PCR)
-    pcr = df.groupby('strike').apply(lambda x: (x[x['type'] == 'PE']['oi'].sum()) / (x[x['type'] == 'CE']['oi'].sum()))
-    pcr_max = pcr.max()
-    pcr_max_strike = pcr.idxmax()
-    if pcr_max > 1:
-        analysis['PCR Analysis'] = f"Put-Call Ratio (PCR) is highest at strike {pcr_max_strike} with a value of {pcr_max}. A PCR > 1 suggests a bearish sentiment."
-    else:
-        analysis['PCR Analysis'] = f"Put-Call Ratio (PCR) is lowest at strike {pcr_max_strike} with a value of {pcr_max}. A PCR < 1 suggests a bullish sentiment."
-
-    # Delta-Gamma Exposure
-    delta_gamma_analysis = df[['strike', 'delta', 'gamma']].groupby('strike').agg({'delta': 'sum', 'gamma': 'sum'}).reset_index()
-    analysis['Delta-Gamma Exposure'] = "Delta and Gamma values show potential hedging pressures. High Delta indicates a more directional move."
-
-    # Change in OI (ΔOI)
-    change_oi_analysis = df.groupby('strike')['change_oi'].sum().sort_values(ascending=False).head(1)
-    change_oi_strike = change_oi_analysis.index[0]
-    change_oi_value = change_oi_analysis.values[0]
-    if change_oi_value > 0:
-        analysis['ΔOI Analysis'] = f"Change in OI is highest at strike {change_oi_strike} with a value of {change_oi_value}. Positive ΔOI in CE indicates a bullish sentiment."
-    else:
-        analysis['ΔOI Analysis'] = f"Change in OI is highest at strike {change_oi_strike} with a value of {change_oi_value}. Positive ΔOI in PE indicates a bearish sentiment."
-
+    # Placeholder for future analysis and trends
+    analysis = """
+    📊 **Analysis & Interpretation**:
+    - The chart above shows the distribution of Open Interest (OI) and Volume for various strikes.
+    - High OI and Volume at a particular strike may indicate heavy market activity or institutional interest.
+    - The IV Smile curve indicates implied volatility for both Call and Put options. Higher IV at extreme strikes may suggest market expectation of higher volatility.
+    """
     return analysis
 
-# Display Analysis
+# Display Analysis in the app
 def display_analysis(analysis):
-    for key, value in analysis.items():
-        st.subheader(f"🔹 {key}")
-        st.write(value)
+    st.write(analysis)
 
-# Streamlit UI
+# Main Function
 def main():
     st.set_page_config(page_title="Nifty Option Flow", layout="wide")
     st.title("📊 Real-Time Alluvial Flow of Most Active Nifty Options")
-
+    
     expiry = st.text_input("Expiry Date (DD-MM-YYYY):", "24-04-2025")
     metric = st.selectbox("Select Metric", ["volume", "oi", "ltp"])
     top_n = st.slider("Top N Active Options", 5, 20, 10)
